@@ -1,0 +1,9 @@
+pyproject.toml
+src/jori_health/__init__.py
+src/jori_health/ai/__init__.py
+src/jori_health/ai/core.py
+src/open_compute.egg-info/PKG-INFO
+src/open_compute.egg-info/SOURCES.txt
+src/open_compute.egg-info/dependency_links.txt
+src/open_compute.egg-info/top_level.txt
+tests/test_ai.py
