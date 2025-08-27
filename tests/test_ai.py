@@ -8,4 +8,3 @@ def test_hello_world():
 def test_echo_other():
     ai = JoriAI()
     assert ai.ask("something else") == "Echo: something else"
-

@@ -15,4 +15,3 @@ class JoriAI:
 
 # Default instance for convenience: `from jori_health.ai import joriai`
 joriai = JoriAI()
-
