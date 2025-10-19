@@ -28,5 +28,5 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["jori_health*"]
+include = ["jori_health*", "open_compute*"]
 
