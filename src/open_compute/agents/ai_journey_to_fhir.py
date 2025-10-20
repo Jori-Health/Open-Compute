@@ -9,8 +9,10 @@ refinement.
 import json
 import os
 import asyncio
+import uuid
+import time
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional, Literal
+from typing import Dict, Any, List, Optional, Literal, Tuple
 from pathlib import Path
 from datetime import datetime
 
@@ -25,6 +27,7 @@ except ImportError:
 from ..types import PatientJourney, FHIRPatientData
 from ..utils.fhir_validator import FHIRValidator, ValidationResult
 from ..utils.fhir_schema_loader import get_schema_loader
+from ..utils.fhir_data_loader import get_data_loader
 
 
 @dataclass
@@ -32,6 +35,8 @@ class GenerationPlan:
     """Plan for generating FHIR resources."""
     resources_to_generate: List[Dict[str, Any]] = field(default_factory=list)
     rationale: str = ""
+    resource_id_map: Dict[str, str] = field(
+        default_factory=dict)  # Maps resourceType to UUID
 
 
 @dataclass
@@ -66,9 +71,11 @@ class AIJourneyToFHIR:
         max_iterations: int = 5,
         max_fix_retries: int = 3,
         fhir_schema_path: Optional[str] = None,
+        fhir_data_directory: Optional[str] = None,
         auto_save: bool = True,
-        save_directory: str = "generated_fhir",
+        save_directory: str = "output",
         parallel_generation: bool = True,
+        use_enhanced_context: bool = True,
     ):
         """
         Initialize the AI agent.
@@ -79,10 +86,12 @@ class AIJourneyToFHIR:
             fhir_version: FHIR version to generate
             max_iterations: Maximum number of generation iterations
             max_fix_retries: Maximum number of attempts to fix validation errors per resource
-            fhir_schema_path: Optional path to fhir.schema.json file for enhanced context
+            fhir_schema_path: Optional path to fhir.schema.json file (legacy, use fhir_data_directory instead)
+            fhir_data_directory: Optional path to directory containing all FHIR data files (recommended)
             auto_save: Automatically save successful FHIR bundles to disk
-            save_directory: Directory to save generated bundles (default: "generated_fhir")
+            save_directory: Directory to save generated bundles (default: "output")
             parallel_generation: Use parallel generation for faster results (recommended)
+            use_enhanced_context: Use enhanced context with valuesets, profiles, etc. (recommended)
         """
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         if not self.api_key:
@@ -97,10 +106,24 @@ class AIJourneyToFHIR:
         self.max_iterations = max_iterations
         self.max_fix_retries = max_fix_retries
         self.validator = FHIRValidator(version=fhir_version)
-        self.schema_loader = get_schema_loader(fhir_schema_path)
+
+        # Load FHIR data - use enhanced loader if enabled, fallback to basic schema loader
+        self.use_enhanced_context = use_enhanced_context
+        if use_enhanced_context:
+            self.data_loader = get_data_loader(fhir_data_directory)
+            self.schema_loader = get_schema_loader(
+                fhir_schema_path)  # Keep for backward compatibility
+        else:
+            self.data_loader = None
+            self.schema_loader = get_schema_loader(fhir_schema_path)
+
         self.auto_save = auto_save
         self.save_directory = save_directory
         self.parallel_generation = parallel_generation
+
+        # Create output directory if auto_save is enabled
+        if self.auto_save:
+            Path(self.save_directory).mkdir(parents=True, exist_ok=True)
 
     def generate_from_journey(
         self, journey: PatientJourney, patient_context: Optional[str] = None
@@ -143,6 +166,8 @@ class AIJourneyToFHIR:
             f"✓ Plan created: {len(plan.resources_to_generate)} resources to generate")
         print(f"  Rationale: {plan.rationale}")
 
+        print(f"  Resources to generate: {plan.resources_to_generate}")
+
         # Step 2: Generate resources iteratively with validation
         print(
             f"\n⚙️  STEP 2: Generating Resources (max {self.max_iterations} iterations)...")
@@ -157,29 +182,60 @@ class AIJourneyToFHIR:
 
         return result
 
+    def _extract_patient_name(self, fhir_data: FHIRPatientData) -> Tuple[str, str]:
+        """
+        Extract patient's first and last name from the Patient resource.
+
+        Args:
+            fhir_data: FHIR bundle containing resources
+
+        Returns:
+            Tuple of (first_name, last_name). Returns ('unknown', 'patient') if not found.
+        """
+        for entry in fhir_data.entries:
+            resource = entry.get("resource", {})
+            if resource.get("resourceType") == "Patient":
+                # Look for name in the Patient resource
+                names = resource.get("name", [])
+                if names and len(names) > 0:
+                    name = names[0]  # Get the first name entry
+                    given = name.get("given", [])
+                    family = name.get("family", "")
+
+                    first_name = given[0] if given else "unknown"
+                    last_name = family if family else "patient"
+
+                    # Sanitize names for use in folder names
+                    first_name = "".join(
+                        c if c.isalnum() else "_" for c in str(first_name).lower())
+                    last_name = "".join(
+                        c if c.isalnum() else "_" for c in str(last_name).lower())
+
+                    return first_name, last_name
+
+        return "unknown", "patient"
+
     def _save_bundle(self, fhir_data: FHIRPatientData, journey: PatientJourney) -> Optional[str]:
         """
-        Save a FHIR bundle to disk.
+        Save FHIR data to disk in both Bundle and BULK FHIR formats.
 
         Args:
             fhir_data: FHIR bundle to save
             journey: Original journey (for filename)
 
         Returns:
-            Path to saved file, or None if save failed
+            Path to generation folder, or None if save failed
         """
         try:
-            # Create save directory if it doesn't exist
-            save_dir = Path(self.save_directory)
-            save_dir.mkdir(parents=True, exist_ok=True)
+            # Extract patient name from resources
+            first_name, last_name = self._extract_patient_name(fhir_data)
+            patient_folder_name = f"{first_name}_{last_name}"
 
-            # Create filename with timestamp and patient ID
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            patient_id = journey.patient_id or "unknown"
-            filename = f"fhir_bundle_{patient_id}_{timestamp}.json"
-            filepath = save_dir / filename
+            # Create patient-specific folder under output directory
+            patient_dir = Path(self.save_directory) / patient_folder_name
+            patient_dir.mkdir(parents=True, exist_ok=True)
 
-            # Create bundle structure
+            # 1. Save Patient Bundle version
             bundle = {
                 "resourceType": "Bundle",
                 "type": "collection",
@@ -187,11 +243,54 @@ class AIJourneyToFHIR:
                 "entry": fhir_data.entries,
             }
 
-            # Save to file
-            with open(filepath, 'w') as f:
+            bundle_filepath = patient_dir / "patient_bundle.json"
+            with open(bundle_filepath, 'w') as f:
                 json.dump(bundle, f, indent=2)
 
-            return str(filepath)
+            print(f"   ✓ Saved Patient Bundle: {bundle_filepath}")
+
+            # 2. Save Bulk FHIR version (single JSONL file with all resources)
+            bulk_filepath = patient_dir / "bulk_fhir.jsonl"
+            with open(bulk_filepath, 'w') as f:
+                for entry in fhir_data.entries:
+                    resource = entry.get("resource", {})
+                    f.write(json.dumps(resource) + '\n')
+
+            resource_count = len(fhir_data.entries)
+            print(
+                f"   ✓ Saved Bulk FHIR ({resource_count} resources): {bulk_filepath}")
+
+            # 3. Group resources by type for summary
+            resources_by_type = {}
+            for entry in fhir_data.entries:
+                resource = entry.get("resource", {})
+                resource_type = resource.get("resourceType", "Unknown")
+
+                if resource_type not in resources_by_type:
+                    resources_by_type[resource_type] = []
+                resources_by_type[resource_type].append(resource)
+
+            # 4. Create a README with metadata
+            patient_id = journey.patient_id or "unknown"
+            readme_filepath = patient_dir / "README.txt"
+            with open(readme_filepath, 'w') as f:
+                f.write(f"FHIR Generation Results\n")
+                f.write(f"=" * 50 + "\n\n")
+                f.write(f"Patient: {first_name.title()} {last_name.title()}\n")
+                f.write(f"Patient ID: {patient_id}\n")
+                f.write(f"Generated: {datetime.now().isoformat()}\n")
+                f.write(f"FHIR Version: {self.fhir_version}\n")
+                f.write(f"Model: {self.model}\n\n")
+                f.write(f"Files:\n")
+                f.write(
+                    f"  - patient_bundle.json: Complete FHIR Bundle with all resources\n")
+                f.write(
+                    f"  - bulk_fhir.jsonl: All resources in JSONL format (one resource per line)\n\n")
+                f.write(f"Resource Summary:\n")
+                for resource_type, resources in sorted(resources_by_type.items()):
+                    f.write(f"  - {resource_type}: {len(resources)}\n")
+
+            return str(patient_dir)
 
         except Exception as e:
             print(f"Warning: Could not save bundle: {e}")
@@ -221,15 +320,34 @@ Patient Journey:
 {f"Additional Context: {patient_context}" if patient_context else ""}
 
 Your task:
-1. Identify ALL FHIR resources needed to represent this patient journey completely
+1. Identify FHIR resources needed to represent this patient journey
 2. For each resource, specify:
    - resourceType (e.g., Patient, Encounter, Condition, Observation, Procedure, MedicationRequest, etc.)
    - A brief description of what the resource should contain
    - Key data points from the journey that should be included
 
+CRITICAL RULES - READ CAREFULLY:
+- ALWAYS include administrative/structural resources: Patient, Encounter, Practitioner, Location, Organization (even if not explicitly mentioned in the journey)
+- For CLINICAL resources (Condition, Observation, Procedure, Medication, DiagnosticReport, Immunization, etc.):
+  * ONLY include them if they are EXPLICITLY mentioned in the patient journey stages or context
+  * DO NOT add any clinical resources that are not described in the journey
+  * DO NOT make assumptions or add "typical" resources for the condition
+  * DO NOT infer clinical events that are not stated
+  * If a stage mentions a diagnosis, include ONLY that diagnosis (not related conditions)
+  * If a stage mentions a medication, include ONLY that medication (not related medications)
+  * If a stage mentions a procedure, include ONLY that procedure (not related procedures)
+- Use the journey stages as the ONLY source of truth for clinical events
+- When in doubt, DO NOT include a resource - be conservative
+
+EXAMPLES OF WHAT NOT TO DO:
+- If journey mentions "diabetes", DON'T add resources for typical diabetes complications unless explicitly mentioned
+- If journey mentions "heart attack", DON'T add resources for cardiac rehab unless explicitly mentioned
+- If journey mentions one medication, DON'T add other medications in the same class
+- DON'T add preventive care resources unless the journey explicitly mentions them
+
 Return your response as a JSON object with this structure:
 {{
-    "rationale": "Brief explanation of your approach",
+    "rationale": "Brief explanation of your approach and why you chose these specific resources",
     "resources": [
         {{
             "resourceType": "Patient",
@@ -240,12 +358,22 @@ Return your response as a JSON object with this structure:
             "resourceType": "Encounter",
             "description": "Hospital admission encounter",
             "key_data": ["admission date", "reason for visit"]
+        }},
+        {{
+            "resourceType": "Practitioner",
+            "description": "Healthcare provider who treated the patient",
+            "key_data": ["practitioner details from journey if available"]
+        }},
+        {{
+            "resourceType": "Location",
+            "description": "Healthcare facility where encounter occurred",
+            "key_data": ["location details from journey if available"]
         }}
-        // ... more resources
+        // ... only add clinical resources that are explicitly mentioned in the journey stages
     ]
 }}
 
-Be comprehensive - include all relevant resource types for a complete clinical picture."""
+Remember: Your rationale should explain how each clinical resource is directly mentioned in the journey. Be extremely conservative - only include what is explicitly stated."""
 
         try:
             response = self.client.chat.completions.create(
@@ -262,10 +390,27 @@ Be comprehensive - include all relevant resource types for a complete clinical p
             )
 
             plan_data = json.loads(response.choices[0].message.content)
+            resources = plan_data.get("resources", [])
+
+            # Generate UUIDs for each planned resource
+            resource_id_map = {}
+            for resource_spec in resources:
+                resource_type = resource_spec.get("resourceType")
+                if resource_type:
+                    # Generate a unique UUID for this resource
+                    resource_uuid = str(uuid.uuid4())
+                    resource_id_map[resource_type] = resource_uuid
+                    # Add the UUID to the resource spec for easy reference
+                    resource_spec["assigned_id"] = resource_uuid
+
+            print(f"\n🔑 Generated Resource IDs:")
+            for resource_type, resource_id in resource_id_map.items():
+                print(f"   {resource_type}: {resource_id}")
 
             return GenerationPlan(
-                resources_to_generate=plan_data.get("resources", []),
+                resources_to_generate=resources,
                 rationale=plan_data.get("rationale", ""),
+                resource_id_map=resource_id_map,
             )
 
         except Exception as e:
@@ -309,11 +454,10 @@ Be comprehensive - include all relevant resource types for a complete clinical p
                     f"\n🔄 Generating {len(resources_to_generate)} resources in parallel...")
                 print("   📡 Making concurrent API calls...")
 
-                import time
                 start_time = time.time()
                 batch_results = asyncio.run(
                     self._generate_resources_parallel(
-                        resources_to_generate, journey, generated_resources, patient_context
+                        resources_to_generate, journey, generated_resources, patient_context, initial_plan.resource_id_map
                     )
                 )
                 elapsed = time.time() - start_time
@@ -322,61 +466,76 @@ Be comprehensive - include all relevant resource types for a complete clinical p
                 # Process parallel results
                 print(
                     f"\n📝 Processing and validating {len(batch_results)} generated resources...")
+
+                # First pass: validate all resources
+                validation_data = []
                 for idx, (resource_spec, generated_resource) in enumerate(zip(resources_to_generate, batch_results)):
                     resource_type = resource_spec.get("resourceType")
                     print(
-                        f"\n  [{idx+1}/{len(resources_to_generate)}] {resource_type}")
+                        f"  [{idx+1}/{len(resources_to_generate)}] {resource_type}: ", end="")
 
                     if not generated_resource:
+                        print("❌ Generation failed")
                         errors.append(f"Failed to generate {resource_type}")
                         continue
 
                     # Validate the resource
-                    print(f"     🔍 Validating...")
                     validation = self.validator.validate(generated_resource)
                     validation_results.append(validation)
 
                     if validation.is_valid:
-                        print(f"     ✓ Validation passed")
+                        print("✓ Valid")
                         generated_resources.append(generated_resource)
-                        print(f"     ✅ {resource_type} completed!")
                     else:
-                        print(f"     ✗ Validation failed:")
-                        for error in validation.errors:
-                            print(f"        • {error}")
+                        print(f"✗ Invalid ({len(validation.errors)} errors)")
+                        validation_data.append({
+                            'resource': generated_resource,
+                            'validation': validation,
+                            'spec': resource_spec,
+                            'index': idx
+                        })
 
-                        # Try to fix the resource
-                        print(
-                            f"     🔧 Attempting to fix (max {self.max_fix_retries} attempts)...")
-                        fixed_resource = self._fix_invalid_resource(
-                            generated_resource,
-                            validation,
-                            resource_spec,
-                            journey,
-                            generated_resources,
-                            patient_context,
+                # Second pass: fix all invalid resources in parallel
+                if validation_data:
+                    print(
+                        f"\n🔧 Fixing {len(validation_data)} invalid resources in parallel...")
+                    print("   📡 Making concurrent fix API calls...")
+
+                    start_time = time.time()
+                    fix_results = asyncio.run(
+                        self._fix_resources_parallel(
+                            validation_data, journey, generated_resources, patient_context, initial_plan.resource_id_map
                         )
+                    )
+                    elapsed = time.time() - start_time
+                    print(f"   ✓ All fix calls completed in {elapsed:.1f}s")
+
+                    # Process fix results
+                    print(f"\n📝 Validating fixed resources...")
+                    for idx, (val_data, fixed_resource) in enumerate(zip(validation_data, fix_results)):
+                        resource_type = val_data['spec'].get('resourceType')
+                        original_idx = val_data['index']
+                        print(
+                            f"  [{original_idx+1}] {resource_type}: ", end="")
 
                         if fixed_resource:
                             # Validate the fixed resource
-                            print(f"     🔍 Re-validating fixed resource...")
                             fixed_validation = self.validator.validate(
                                 fixed_resource)
                             validation_results.append(fixed_validation)
 
                             if fixed_validation.is_valid:
-                                print(f"     ✓ Validation passed after fix!")
+                                print("✓ Fixed successfully")
                                 generated_resources.append(fixed_resource)
-                                print(f"     ✅ {resource_type} completed!")
                             else:
-                                print(
-                                    f"     ✗ Still invalid after {self.max_fix_retries} attempts")
+                                print(f"✗ Still invalid after fixes")
                                 errors.append(
                                     f"Validation failed for {resource_type} after {self.max_fix_retries} attempts: {fixed_validation.errors}"
                                 )
                         else:
+                            print(f"✗ Could not fix")
                             errors.append(
-                                f"Validation failed for {resource_type}: {validation.errors}"
+                                f"Validation failed for {resource_type}: {val_data['validation'].errors}"
                             )
             else:
                 # Sequential generation (for single resource or when parallel disabled)
@@ -386,7 +545,7 @@ Be comprehensive - include all relevant resource types for a complete clinical p
 
                     # Generate the resource
                     generated_resource = self._generate_single_resource(
-                        resource_spec, journey, generated_resources, patient_context
+                        resource_spec, journey, generated_resources, patient_context, initial_plan.resource_id_map
                     )
 
                     if not generated_resource:
@@ -414,6 +573,7 @@ Be comprehensive - include all relevant resource types for a complete clinical p
                             journey,
                             generated_resources,
                             patient_context,
+                            initial_plan.resource_id_map,
                         )
 
                         if fixed_resource:
@@ -519,6 +679,7 @@ Be comprehensive - include all relevant resource types for a complete clinical p
         journey: PatientJourney,
         existing_resources: List[Dict[str, Any]],
         patient_context: Optional[str] = None,
+        resource_id_map: Optional[Dict[str, str]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Generate a single FHIR resource using AI.
@@ -528,6 +689,7 @@ Be comprehensive - include all relevant resource types for a complete clinical p
             journey: Original patient journey
             existing_resources: Already generated resources for reference
             patient_context: Optional additional context
+            resource_id_map: Map of resourceType to assigned UUIDs
 
         Returns:
             Generated FHIR resource as dict, or None if generation failed
@@ -535,14 +697,22 @@ Be comprehensive - include all relevant resource types for a complete clinical p
         resource_type = resource_spec.get("resourceType")
         description = resource_spec.get("description", "")
         key_data = resource_spec.get("key_data", [])
+        assigned_id = resource_spec.get("assigned_id")  # Get pre-assigned UUID
 
         journey_description = self._format_journey_for_prompt(journey)
         existing_resources_summary = self._format_existing_resources(
             existing_resources)
 
-        # Get FHIR schema context for this resource type
-        schema_context = self.schema_loader.format_schema_for_prompt(
-            resource_type)
+        # Format resource ID map for prompt
+        id_map_text = self._format_resource_id_map(resource_id_map or {})
+
+        # Get FHIR context for this resource type - use enhanced if available
+        if self.use_enhanced_context and self.data_loader and self.data_loader.is_loaded():
+            schema_context = self.data_loader.format_enhanced_context_for_prompt(
+                resource_type)
+        else:
+            schema_context = self.schema_loader.format_schema_for_prompt(
+                resource_type)
 
         generation_prompt = f"""Generate a valid FHIR {self.fhir_version} {resource_type} resource.
 
@@ -558,17 +728,25 @@ Key Data Points: {', '.join(key_data) if key_data else 'All relevant data from j
 Already Generated Resources:
 {existing_resources_summary}
 
+{id_map_text}
+
 {schema_context}
 
-Requirements:
+CRITICAL REQUIREMENTS:
 1. Generate a complete, valid FHIR {self.fhir_version} {resource_type} resource
 2. Include all required fields for {resource_type} (see schema above)
 3. Use proper FHIR data types and structures as defined in the schema
-4. Reference other resources appropriately (e.g., Patient/{{id}})
-5. Extract data from the journey stages and context
-6. Use appropriate coding systems (LOINC, SNOMED CT, RxNorm, etc.)
-7. Follow the property descriptions from the schema
-8. Return ONLY the JSON for the {resource_type} resource, no explanations
+4. Reference other resources appropriately using the Resource IDs provided above (e.g., Patient/{assigned_id})
+5. ONLY use data that is EXPLICITLY mentioned in the journey stages, context, or key data points above
+6. DO NOT add clinical information that is not in the journey
+7. DO NOT make assumptions or add "typical" data for this resource type
+8. DO NOT infer information - if a data point isn't mentioned, omit it or use a minimal placeholder
+9. Use appropriate coding systems (LOINC, SNOMED CT, RxNorm, etc.) ONLY for items explicitly mentioned
+10. Follow the property descriptions from the schema
+11. IMPORTANT: Use the assigned ID "{assigned_id}" as the "id" field for this resource
+12. Return ONLY the JSON for the {resource_type} resource, no explanations
+
+STAY FAITHFUL TO THE JOURNEY: If the journey doesn't mention specific details (like exact measurements, codes, dates), use minimal but valid FHIR structures. Don't invent clinical data.
 
 Return the resource as a valid JSON object."""
 
@@ -578,7 +756,7 @@ Return the resource as a valid JSON object."""
                 messages=[
                     {
                         "role": "system",
-                        "content": f"You are a FHIR expert who generates valid FHIR {self.fhir_version} resources. You always return valid JSON.",
+                        "content": f"You are a FHIR expert who generates valid FHIR {self.fhir_version} resources. You always return valid JSON. You ONLY use data explicitly mentioned in the provided patient journey - you never add information not stated in the journey.",
                     },
                     {"role": "user", "content": generation_prompt},
                 ],
@@ -591,6 +769,10 @@ Return the resource as a valid JSON object."""
 
             # Ensure resourceType is set
             resource["resourceType"] = resource_type
+
+            # Ensure the assigned ID is used
+            if assigned_id:
+                resource["id"] = assigned_id
 
             return resource
 
@@ -604,6 +786,7 @@ Return the resource as a valid JSON object."""
         journey: PatientJourney,
         existing_resources: List[Dict[str, Any]],
         patient_context: Optional[str] = None,
+        resource_id_map: Optional[Dict[str, str]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Async version of _generate_single_resource for parallel execution.
@@ -613,6 +796,7 @@ Return the resource as a valid JSON object."""
             journey: Original patient journey
             existing_resources: Already generated resources for reference
             patient_context: Optional additional context
+            resource_id_map: Map of resourceType to assigned UUIDs
 
         Returns:
             Generated FHIR resource as dict, or None if generation failed
@@ -620,14 +804,22 @@ Return the resource as a valid JSON object."""
         resource_type = resource_spec.get("resourceType")
         description = resource_spec.get("description", "")
         key_data = resource_spec.get("key_data", [])
+        assigned_id = resource_spec.get("assigned_id")  # Get pre-assigned UUID
 
         journey_description = self._format_journey_for_prompt(journey)
         existing_resources_summary = self._format_existing_resources(
             existing_resources)
 
-        # Get FHIR schema context for this resource type
-        schema_context = self.schema_loader.format_schema_for_prompt(
-            resource_type)
+        # Format resource ID map for prompt
+        id_map_text = self._format_resource_id_map(resource_id_map or {})
+
+        # Get FHIR context for this resource type - use enhanced if available
+        if self.use_enhanced_context and self.data_loader and self.data_loader.is_loaded():
+            schema_context = self.data_loader.format_enhanced_context_for_prompt(
+                resource_type)
+        else:
+            schema_context = self.schema_loader.format_schema_for_prompt(
+                resource_type)
 
         generation_prompt = f"""Generate a valid FHIR {self.fhir_version} {resource_type} resource.
 
@@ -643,17 +835,25 @@ Key Data Points: {', '.join(key_data) if key_data else 'All relevant data from j
 Already Generated Resources:
 {existing_resources_summary}
 
+{id_map_text}
+
 {schema_context}
 
-Requirements:
+CRITICAL REQUIREMENTS:
 1. Generate a complete, valid FHIR {self.fhir_version} {resource_type} resource
 2. Include all required fields for {resource_type} (see schema above)
 3. Use proper FHIR data types and structures as defined in the schema
-4. Reference other resources appropriately (e.g., Patient/{{id}})
-5. Extract data from the journey stages and context
-6. Use appropriate coding systems (LOINC, SNOMED CT, RxNorm, etc.)
-7. Follow the property descriptions from the schema
-8. Return ONLY the JSON for the {resource_type} resource, no explanations
+4. Reference other resources appropriately using the Resource IDs provided above (e.g., Patient/{assigned_id})
+5. ONLY use data that is EXPLICITLY mentioned in the journey stages, context, or key data points above
+6. DO NOT add clinical information that is not in the journey
+7. DO NOT make assumptions or add "typical" data for this resource type
+8. DO NOT infer information - if a data point isn't mentioned, omit it or use a minimal placeholder
+9. Use appropriate coding systems (LOINC, SNOMED CT, RxNorm, etc.) ONLY for items explicitly mentioned
+10. Follow the property descriptions from the schema
+11. IMPORTANT: Use the assigned ID "{assigned_id}" as the "id" field for this resource
+12. Return ONLY the JSON for the {resource_type} resource, no explanations
+
+STAY FAITHFUL TO THE JOURNEY: If the journey doesn't mention specific details (like exact measurements, codes, dates), use minimal but valid FHIR structures. Don't invent clinical data.
 
 Return the resource as a valid JSON object."""
 
@@ -663,7 +863,7 @@ Return the resource as a valid JSON object."""
                 messages=[
                     {
                         "role": "system",
-                        "content": f"You are a FHIR expert who generates valid FHIR {self.fhir_version} resources. You always return valid JSON.",
+                        "content": f"You are a FHIR expert who generates valid FHIR {self.fhir_version} resources. You always return valid JSON. You ONLY use data explicitly mentioned in the provided patient journey - you never add information not stated in the journey.",
                     },
                     {"role": "user", "content": generation_prompt},
                 ],
@@ -677,6 +877,10 @@ Return the resource as a valid JSON object."""
             # Ensure resourceType is set
             resource["resourceType"] = resource_type
 
+            # Ensure the assigned ID is used
+            if assigned_id:
+                resource["id"] = assigned_id
+
             return resource
 
         except Exception as e:
@@ -689,6 +893,7 @@ Return the resource as a valid JSON object."""
         journey: PatientJourney,
         existing_resources: List[Dict[str, Any]],
         patient_context: Optional[str] = None,
+        resource_id_map: Optional[Dict[str, str]] = None,
     ) -> List[Optional[Dict[str, Any]]]:
         """
         Generate multiple FHIR resources in parallel using async API calls.
@@ -698,20 +903,57 @@ Return the resource as a valid JSON object."""
             journey: Original patient journey
             existing_resources: Already generated resources for reference
             patient_context: Optional additional context
+            resource_id_map: Map of resourceType to assigned UUIDs
 
         Returns:
             List of generated resources (same order as input specs)
         """
         tasks = [
             self._generate_single_resource_async(
-                resource_spec, journey, existing_resources, patient_context
+                resource_spec, journey, existing_resources, patient_context, resource_id_map
             )
             for resource_spec in resource_specs
         ]
 
         return await asyncio.gather(*tasks)
 
-    def _fix_invalid_resource(
+    async def _fix_resources_parallel(
+        self,
+        validation_data: List[Dict[str, Any]],
+        journey: PatientJourney,
+        existing_resources: List[Dict[str, Any]],
+        patient_context: Optional[str] = None,
+        resource_id_map: Optional[Dict[str, str]] = None,
+    ) -> List[Optional[Dict[str, Any]]]:
+        """
+        Fix multiple invalid FHIR resources in parallel using async API calls.
+
+        Args:
+            validation_data: List of dicts with 'resource', 'validation', 'spec' keys
+            journey: Original patient journey
+            existing_resources: Already generated resources for reference
+            patient_context: Optional additional context
+            resource_id_map: Map of resourceType to assigned UUIDs
+
+        Returns:
+            List of fixed resources (same order as input)
+        """
+        tasks = [
+            self._fix_invalid_resource_async(
+                val_data['resource'],
+                val_data['validation'],
+                val_data['spec'],
+                journey,
+                existing_resources,
+                patient_context,
+                resource_id_map,
+            )
+            for val_data in validation_data
+        ]
+
+        return await asyncio.gather(*tasks)
+
+    async def _fix_invalid_resource_async(
         self,
         invalid_resource: Dict[str, Any],
         validation_result: ValidationResult,
@@ -719,9 +961,10 @@ Return the resource as a valid JSON object."""
         journey: PatientJourney,
         existing_resources: List[Dict[str, Any]],
         patient_context: Optional[str] = None,
+        resource_id_map: Optional[Dict[str, str]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
-        Attempt to fix an invalid FHIR resource using AI based on validation errors.
+        Async version of _fix_invalid_resource for parallel execution.
 
         Args:
             invalid_resource: The resource that failed validation
@@ -730,11 +973,13 @@ Return the resource as a valid JSON object."""
             journey: Original patient journey
             existing_resources: Already generated resources for reference
             patient_context: Optional additional context
+            resource_id_map: Map of resourceType to assigned UUIDs
 
         Returns:
             Fixed FHIR resource as dict, or None if fixing failed
         """
         resource_type = invalid_resource.get("resourceType", "Unknown")
+        assigned_id = resource_spec.get("assigned_id")
 
         # Format the errors for the AI
         errors_text = "\n".join(
@@ -744,9 +989,16 @@ Return the resource as a valid JSON object."""
         existing_resources_summary = self._format_existing_resources(
             existing_resources)
 
-        # Get FHIR schema context for this resource type
-        schema_context = self.schema_loader.format_schema_for_prompt(
-            resource_type)
+        # Format resource ID map for prompt
+        id_map_text = self._format_resource_id_map(resource_id_map or {})
+
+        # Get FHIR context for this resource type - use enhanced if available
+        if self.use_enhanced_context and self.data_loader and self.data_loader.is_loaded():
+            schema_context = self.data_loader.format_enhanced_context_for_prompt(
+                resource_type)
+        else:
+            schema_context = self.schema_loader.format_schema_for_prompt(
+                resource_type)
 
         fix_prompt = f"""You are a FHIR expert. A {resource_type} resource was generated but failed validation.
 
@@ -766,6 +1018,8 @@ Patient Journey (for context):
 Already Generated Resources (for reference):
 {existing_resources_summary}
 
+{id_map_text}
+
 {schema_context}
 
 Requirements:
@@ -773,10 +1027,145 @@ Requirements:
 2. Maintain the clinical meaning and data from the original resource
 3. Ensure all required fields for {resource_type} are present and correct (see schema above)
 4. Use proper FHIR {self.fhir_version} data types and structures as defined in the schema
-5. Reference other resources appropriately (e.g., Patient/{{id}})
+5. Reference other resources appropriately using the Resource IDs provided above (e.g., Patient/{assigned_id})
 6. Use appropriate coding systems (LOINC, SNOMED CT, RxNorm, etc.)
 7. Follow the property descriptions from the schema
-8. Return ONLY the corrected JSON for the {resource_type} resource
+8. IMPORTANT: Ensure the ID field is "{assigned_id}"
+9. Return ONLY the corrected JSON for the {resource_type} resource
+
+Return the fixed resource as a valid JSON object."""
+
+        for attempt in range(1, self.max_fix_retries + 1):
+            try:
+                response = await self.async_client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": f"You are a FHIR expert who fixes validation errors in FHIR {self.fhir_version} resources. You always return valid, corrected JSON.",
+                        },
+                        {"role": "user", "content": fix_prompt},
+                    ],
+                    response_format={"type": "json_object"},
+                )
+
+                fixed_resource = json.loads(
+                    response.choices[0].message.content)
+
+                # Ensure resourceType is preserved
+                fixed_resource["resourceType"] = resource_type
+
+                # Ensure the assigned ID is preserved
+                if assigned_id:
+                    fixed_resource["id"] = assigned_id
+
+                # Validate the fixed resource
+                fixed_validation = self.validator.validate(fixed_resource)
+
+                if fixed_validation.is_valid:
+                    return fixed_resource
+                else:
+                    # Update errors for next attempt
+                    errors_text = "\n".join(
+                        f"- {error}" for error in fixed_validation.errors)
+
+                    # Update the prompt for the next iteration
+                    fix_prompt = f"""The previous fix attempt still has validation errors. Try again.
+
+RESOURCE (with remaining errors):
+{json.dumps(fixed_resource, indent=2)}
+
+REMAINING VALIDATION ERRORS:
+{errors_text}
+
+Fix these errors while maintaining the clinical meaning."""
+
+            except Exception as e:
+                if attempt == self.max_fix_retries:
+                    return None
+                continue
+
+        return None
+
+    def _fix_invalid_resource(
+        self,
+        invalid_resource: Dict[str, Any],
+        validation_result: ValidationResult,
+        resource_spec: Dict[str, Any],
+        journey: PatientJourney,
+        existing_resources: List[Dict[str, Any]],
+        patient_context: Optional[str] = None,
+        resource_id_map: Optional[Dict[str, str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Attempt to fix an invalid FHIR resource using AI based on validation errors.
+
+        Args:
+            invalid_resource: The resource that failed validation
+            validation_result: ValidationResult with error details
+            resource_spec: Original specification for the resource
+            journey: Original patient journey
+            existing_resources: Already generated resources for reference
+            patient_context: Optional additional context
+            resource_id_map: Map of resourceType to assigned UUIDs
+
+        Returns:
+            Fixed FHIR resource as dict, or None if fixing failed
+        """
+        resource_type = invalid_resource.get("resourceType", "Unknown")
+        assigned_id = resource_spec.get("assigned_id")  # Get pre-assigned UUID
+
+        # Format the errors for the AI
+        errors_text = "\n".join(
+            f"- {error}" for error in validation_result.errors)
+
+        journey_description = self._format_journey_for_prompt(journey)
+        existing_resources_summary = self._format_existing_resources(
+            existing_resources)
+
+        # Format resource ID map for prompt
+        id_map_text = self._format_resource_id_map(resource_id_map or {})
+
+        # Get FHIR context for this resource type - use enhanced if available
+        if self.use_enhanced_context and self.data_loader and self.data_loader.is_loaded():
+            schema_context = self.data_loader.format_enhanced_context_for_prompt(
+                resource_type)
+        else:
+            schema_context = self.schema_loader.format_schema_for_prompt(
+                resource_type)
+
+        fix_prompt = f"""You are a FHIR expert. A {resource_type} resource was generated but failed validation.
+
+Your task: Fix the validation errors while preserving the clinical meaning.
+
+ORIGINAL RESOURCE (with errors):
+{json.dumps(invalid_resource, indent=2)}
+
+VALIDATION ERRORS:
+{errors_text}
+
+Patient Journey (for context):
+{journey_description}
+
+{f"Additional Context: {patient_context}" if patient_context else ""}
+
+Already Generated Resources (for reference):
+{existing_resources_summary}
+
+{id_map_text}
+
+{schema_context}
+
+Requirements:
+1. Fix ALL validation errors listed above
+2. Maintain the clinical meaning and data from the original resource
+3. Ensure all required fields for {resource_type} are present and correct (see schema above)
+4. Use proper FHIR {self.fhir_version} data types and structures as defined in the schema
+5. Reference other resources appropriately using the Resource IDs provided above (e.g., Patient/{assigned_id})
+6. Use appropriate coding systems (LOINC, SNOMED CT, RxNorm, etc.)
+7. Follow the property descriptions from the schema
+8. IMPORTANT: Ensure the ID field is "{assigned_id}"
+9. Return ONLY the corrected JSON for the {resource_type} resource
 
 Return the fixed resource as a valid JSON object."""
 
@@ -803,6 +1192,10 @@ Return the fixed resource as a valid JSON object."""
 
                 # Ensure resourceType is preserved
                 fixed_resource["resourceType"] = resource_type
+
+                # Ensure the assigned ID is preserved
+                if assigned_id:
+                    fixed_resource["id"] = assigned_id
 
                 # Validate the fixed resource
                 fixed_validation = self.validator.validate(fixed_resource)
@@ -870,23 +1263,32 @@ Generated FHIR Resources:
 {resources_summary}
 
 Your task:
-1. Review if the generated resources completely capture the patient journey
-2. Check if any important clinical events, conditions, observations, procedures, medications, etc. are missing
+1. Review if the generated resources completely capture ALL events explicitly mentioned in the patient journey
+2. Check if any explicitly mentioned clinical events, conditions, observations, procedures, or medications are missing
 3. Determine if more resources are needed
+
+CRITICAL RULES:
+- ONLY request additional resources for items EXPLICITLY mentioned in the journey stages or context
+- DO NOT request resources for "typical" events that aren't mentioned
+- DO NOT infer missing resources based on clinical best practices
+- If the journey mentions 2 medications, only those 2 should be in resources - don't add more
+- Be conservative: when in doubt, mark as complete
 
 Return a JSON object with this structure:
 {{
     "is_complete": true or false,
-    "reasoning": "Explanation of your assessment",
+    "reasoning": "Explanation of your assessment - cite specific journey stages for any missing resources",
     "additional_resources": [
         {{
             "resourceType": "Condition",
-            "description": "Specific condition that needs to be documented",
-            "key_data": ["relevant data points"]
+            "description": "Specific condition that needs to be documented (cite the journey stage that mentions it)",
+            "key_data": ["relevant data points from the journey"]
         }}
-        // Only if is_complete is false
+        // Only if is_complete is false AND the resource is explicitly mentioned in the journey
     ]
-}}"""
+}}
+
+Remember: Only flag as incomplete if something explicitly mentioned in the journey is missing from resources."""
 
         try:
             response = self.client.chat.completions.create(
@@ -1022,6 +1424,17 @@ Return a JSON object with this structure:
 
         return "\n".join(lines)
 
+    def _format_resource_id_map(self, resource_id_map: Dict[str, str]) -> str:
+        """Format resource ID map for inclusion in prompts."""
+        if not resource_id_map:
+            return ""
+
+        lines = ["Resource IDs (use these when referencing other resources):"]
+        for resource_type, resource_id in resource_id_map.items():
+            lines.append(f"  - {resource_type}: {resource_id}")
+
+        return "\n".join(lines)
+
     def _create_bundle(self, resources: List[Dict[str, Any]]) -> FHIRPatientData:
         """Create a FHIR Bundle from generated resources."""
         entries = []
@@ -1044,9 +1457,11 @@ def generate_fhir_from_journey(
     max_iterations: int = 5,
     max_fix_retries: int = 3,
     fhir_schema_path: Optional[str] = None,
+    fhir_data_directory: Optional[str] = None,
     auto_save: bool = True,
-    save_directory: str = "generated_fhir",
+    save_directory: str = "output",
     parallel_generation: bool = True,
+    use_enhanced_context: bool = True,
 ) -> GenerationResult:
     """
     Convenience function to generate FHIR resources from a patient journey.
@@ -1059,10 +1474,12 @@ def generate_fhir_from_journey(
         fhir_version: FHIR version to generate
         max_iterations: Maximum number of generation iterations
         max_fix_retries: Maximum number of attempts to fix validation errors per resource
-        fhir_schema_path: Optional path to fhir.schema.json file for enhanced context
+        fhir_schema_path: Optional path to fhir.schema.json file (legacy)
+        fhir_data_directory: Optional path to directory containing all FHIR data files (recommended)
         auto_save: Automatically save successful FHIR bundles to disk (default: True)
-        save_directory: Directory to save generated bundles (default: "generated_fhir")
+        save_directory: Directory to save generated bundles (default: "output")
         parallel_generation: Use parallel generation for faster results (default: True)
+        use_enhanced_context: Use enhanced context with valuesets, profiles, etc. (default: True, recommended)
 
     Returns:
         GenerationResult with generated resources and validation status
@@ -1074,8 +1491,10 @@ def generate_fhir_from_journey(
         max_iterations=max_iterations,
         max_fix_retries=max_fix_retries,
         fhir_schema_path=fhir_schema_path,
+        fhir_data_directory=fhir_data_directory,
         auto_save=auto_save,
         save_directory=save_directory,
         parallel_generation=parallel_generation,
+        use_enhanced_context=use_enhanced_context,
     )
     return agent.generate_from_journey(journey, patient_context)

@@ -23,6 +23,10 @@ from .utils.fhir_schema_loader import (
     FHIRSchemaLoader,
     get_schema_loader,
 )
+from .utils.fhir_data_loader import (
+    FHIRDataLoader,
+    get_data_loader,
+)
 
 __all__ = [
     "FHIRPatientData",
@@ -40,6 +44,8 @@ __all__ = [
     "BundleValidationResult",
     "FHIRSchemaLoader",
     "get_schema_loader",
+    "FHIRDataLoader",
+    "get_data_loader",
     "USCoreSTU",
     "US_CORE_STU_TO_URL",
 ]
