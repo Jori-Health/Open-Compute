@@ -1,0 +1,3 @@
+[console_scripts]
+fhir-docs-download = open_compute.utils.fhir_docs_downloader:main
+firecrawl-crawl = open_compute.utils.firecrawl:main
