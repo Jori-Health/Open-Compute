@@ -1,8 +1,8 @@
 # Open Compute
 
-**Open-source agentic AI for healthcare technology** 🏥🤖
+**Open-source agentic AI for health-tech **
 
-Open Compute is a powerful Python library that uses AI agents to transform patient journeys into standards-compliant FHIR (Fast Healthcare Interoperability Resources) data. Built by [Jori Health](https://jorihealth.com), this tool enables healthcare developers to bridge the gap between narrative patient experiences and structured healthcare data.
+Open Compute is a powerful Python library that uses AI agents to transform patient journeys into standards-compliant FHIR (Fast Healthcare Interoperability Resources) data. Built by [Jori Health](https://jori.health), this tool enables healthcare developers to bridge the gap between narrative patient experiences and structured healthcare data.
 
 ## ✨ Key Features
 
@@ -14,32 +14,15 @@ Open Compute is a powerful Python library that uses AI agents to transform patie
 - **💾 Auto-Save**: Automatically saves generated resources with organized file structure
 - **🎯 FHIR Version Support**: Compatible with FHIR R4, R4B, R5, and STU3
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Installation
 
 #### Option 1: Install from GitHub (Recommended)
 
 ```bash
-pip install git+https://github.com/jori-health/open-compute.git
+pip install open-compute
 ```
-
-#### Option 2: Install from local clone (for development)
-
-```bash
-git clone https://github.com/jori-health/open-compute.git
-cd open-compute
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-pip install -U pip
-pip install -e .
-```
-
-> 📦 Once published to PyPI:
->
-> ```bash
-> pip install open-compute
-> ```
 
 ### Prerequisites
 
@@ -49,7 +32,7 @@ pip install -e .
   export OPENAI_API_KEY='your-api-key-here'
   ```
 
-## 📖 Usage
+## Usage
 
 ### Patient Journey to FHIR Conversion
 
@@ -157,7 +140,7 @@ agent = AIJourneyToFHIR(
 result = agent.generate(journey, patient_context="...")
 ```
 
-## 📚 Examples
+## Examples
 
 We provide comprehensive examples to help you get started:
 
@@ -271,19 +254,5 @@ We welcome contributions! Open Compute is an open-source project and we'd love y
 ## 📄 License
 
 MIT License - see [LICENSE](LICENSE) for details
-
-## 🙏 Acknowledgments
-
-- Built with ❤️ by [Jori Health](https://jorihealth.com)
-- Powered by [OpenAI](https://openai.com)
-- FHIR specifications by [HL7](https://www.hl7.org/fhir/)
-
-## 📞 Support
-
-- **Issues**: [GitHub Issues](https://github.com/jori-health/open-compute/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/jori-health/open-compute/discussions)
-- **Email**: support@jorihealth.com
-
----
 
 **Made with 🏥 for better healthcare interoperability**
