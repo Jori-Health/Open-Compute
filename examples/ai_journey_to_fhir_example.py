@@ -95,7 +95,7 @@ def example_basic_usage():
     result = generate_fhir_from_journey(
         journey=journey,
         patient_context=patient_context,
-        model="gpt-5-mini",
+        model="gpt-4o-mini",
         fhir_version="R4",
         max_iterations=1,
         auto_save=True,  # Automatically saves to output/firstname_lastname/ folder

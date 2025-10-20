@@ -66,7 +66,7 @@ class AIJourneyToFHIR:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gpt-5-mini",
+        model: str = "gpt-4o-mini",
         fhir_version: Literal["R4", "R4B", "R5", "STU3"] = "R4",
         max_iterations: int = 5,
         max_fix_retries: int = 3,
@@ -173,12 +173,17 @@ class AIJourneyToFHIR:
             f"\n⚙️  STEP 2: Generating Resources (max {self.max_iterations} iterations)...")
         result = self._iterative_generation(journey, plan, patient_context)
 
-        # Step 3: Auto-save if enabled and successful
-        if self.auto_save and result.success and result.fhir_data:
+        # Step 3: Auto-save if enabled and there's data to save (even if generation wasn't fully successful)
+        if self.auto_save and result.fhir_data:
             print(f"\n💾 STEP 3: Auto-Saving Bundle...")
+            status_text = "complete" if result.success else "partial (incomplete generation)"
+            print(
+                f"   Saving {status_text} bundle with {len(result.generated_resources)} resources...")
             saved_path = self._save_bundle(result.fhir_data, journey)
             if saved_path:
                 print(f"✓ Auto-saved FHIR bundle to: {saved_path}")
+            else:
+                print(f"⚠️  Failed to save bundle to disk")
 
         return result
 
@@ -1452,7 +1457,7 @@ def generate_fhir_from_journey(
     journey: PatientJourney,
     patient_context: Optional[str] = None,
     api_key: Optional[str] = None,
-    model: str = "gpt-5-mini",
+    model: str = "gpt-4o-mini",
     fhir_version: Literal["R4", "R4B", "R5", "STU3"] = "R4",
     max_iterations: int = 5,
     max_fix_retries: int = 3,
