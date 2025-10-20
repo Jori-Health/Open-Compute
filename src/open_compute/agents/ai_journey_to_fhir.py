@@ -344,6 +344,12 @@ CRITICAL RULES - READ CAREFULLY:
 - Use the journey stages as the ONLY source of truth for clinical events
 - When in doubt, DO NOT include a resource - be conservative
 
+FORBIDDEN FIELDS - DO NOT suggest these in key_data (they cause validation errors in FHIR R5):
+- For Encounter: DO NOT suggest "period", "reasonCode", or "timestamp"
+- For Procedure: DO NOT suggest "performedDateTime" or "performedPeriod"
+- For Observation: DO NOT suggest "valueComponent" in components
+- These fields don't exist or have different structures in the validation library
+
 EXAMPLES OF WHAT NOT TO DO:
 - If journey mentions "diabetes", DON'T add resources for typical diabetes complications unless explicitly mentioned
 - If journey mentions "heart attack", DON'T add resources for cardiac rehab unless explicitly mentioned
@@ -362,7 +368,7 @@ Return your response as a JSON object with this structure:
         {{
             "resourceType": "Encounter",
             "description": "Hospital admission encounter",
-            "key_data": ["admission date", "reason for visit"]
+            "key_data": ["status", "class", "subject reference"]
         }},
         {{
             "resourceType": "Practitioner",
@@ -719,6 +725,9 @@ Remember: Your rationale should explain how each clinical resource is directly m
             schema_context = self.schema_loader.format_schema_for_prompt(
                 resource_type)
 
+        # Get resource-specific guidance
+        resource_guidance = self._get_resource_specific_guidance(resource_type)
+
         generation_prompt = f"""Generate a valid FHIR {self.fhir_version} {resource_type} resource.
 
 Patient Journey:
@@ -737,11 +746,13 @@ Already Generated Resources:
 
 {schema_context}
 
+{resource_guidance}
+
 CRITICAL REQUIREMENTS:
 1. Generate a complete, valid FHIR {self.fhir_version} {resource_type} resource
-2. Include all required fields for {resource_type} (see schema above)
+2. Include all required fields for {resource_type} (see schema and guidance above)
 3. Use proper FHIR data types and structures as defined in the schema
-4. Reference other resources appropriately using the Resource IDs provided above (e.g., Patient/{assigned_id})
+4. Reference other resources appropriately using the Resource IDs provided above (e.g., Patient/{{patient_id}})
 5. ONLY use data that is EXPLICITLY mentioned in the journey stages, context, or key data points above
 6. DO NOT add clinical information that is not in the journey
 7. DO NOT make assumptions or add "typical" data for this resource type
@@ -750,6 +761,9 @@ CRITICAL REQUIREMENTS:
 10. Follow the property descriptions from the schema
 11. IMPORTANT: Use the assigned ID "{assigned_id}" as the "id" field for this resource
 12. Return ONLY the JSON for the {resource_type} resource, no explanations
+13. Ensure ALL required fields have valid values according to FHIR spec
+14. For CodeableConcept fields, always include at least a 'text' field even if you don't have a specific code
+15. Use the minimal example from the guidance as a starting template
 
 STAY FAITHFUL TO THE JOURNEY: If the journey doesn't mention specific details (like exact measurements, codes, dates), use minimal but valid FHIR structures. Don't invent clinical data.
 
@@ -826,6 +840,9 @@ Return the resource as a valid JSON object."""
             schema_context = self.schema_loader.format_schema_for_prompt(
                 resource_type)
 
+        # Get resource-specific guidance
+        resource_guidance = self._get_resource_specific_guidance(resource_type)
+
         generation_prompt = f"""Generate a valid FHIR {self.fhir_version} {resource_type} resource.
 
 Patient Journey:
@@ -844,11 +861,13 @@ Already Generated Resources:
 
 {schema_context}
 
+{resource_guidance}
+
 CRITICAL REQUIREMENTS:
 1. Generate a complete, valid FHIR {self.fhir_version} {resource_type} resource
-2. Include all required fields for {resource_type} (see schema above)
+2. Include all required fields for {resource_type} (see schema and guidance above)
 3. Use proper FHIR data types and structures as defined in the schema
-4. Reference other resources appropriately using the Resource IDs provided above (e.g., Patient/{assigned_id})
+4. Reference other resources appropriately using the Resource IDs provided above (e.g., Patient/{{patient_id}})
 5. ONLY use data that is EXPLICITLY mentioned in the journey stages, context, or key data points above
 6. DO NOT add clinical information that is not in the journey
 7. DO NOT make assumptions or add "typical" data for this resource type
@@ -857,6 +876,9 @@ CRITICAL REQUIREMENTS:
 10. Follow the property descriptions from the schema
 11. IMPORTANT: Use the assigned ID "{assigned_id}" as the "id" field for this resource
 12. Return ONLY the JSON for the {resource_type} resource, no explanations
+13. Ensure ALL required fields have valid values according to FHIR spec
+14. For CodeableConcept fields, always include at least a 'text' field even if you don't have a specific code
+15. Use the minimal example from the guidance as a starting template
 
 STAY FAITHFUL TO THE JOURNEY: If the journey doesn't mention specific details (like exact measurements, codes, dates), use minimal but valid FHIR structures. Don't invent clinical data.
 
@@ -1439,6 +1461,270 @@ Remember: Only flag as incomplete if something explicitly mentioned in the journ
             lines.append(f"  - {resource_type}: {resource_id}")
 
         return "\n".join(lines)
+
+    def _get_resource_specific_guidance(self, resource_type: str) -> str:
+        """
+        Get resource-specific guidance to help AI generate better resources.
+
+        Args:
+            resource_type: The FHIR resource type
+
+        Returns:
+            Formatted guidance string
+        """
+        guidance_map = {
+            "Encounter": """
+ENCOUNTER SPECIFIC GUIDANCE:
+- status: REQUIRED. Must be one of: planned, arrived, triaged, in-progress, onleave, finished, cancelled, entered-in-error, unknown
+- class: REQUIRED. Must be a LIST containing CodeableConcept objects (NOT just Coding)
+  * Each CodeableConcept should have a 'coding' array
+  * Use system "http://terminology.hl7.org/CodeSystem/v3-ActCode" with codes:
+    - "EMER" for emergency encounters
+    - "IMP" for inpatient encounters  
+    - "AMB" for ambulatory/outpatient
+- subject: REQUIRED. Reference to Patient resource
+- CRITICAL: DO NOT include these fields (they cause validation errors):
+  * period - Not supported in this library version
+  * reasonCode - Not supported (use 'reason' if needed, but best to omit)
+
+Example minimal Encounter (USE EXACTLY THIS STRUCTURE):
+{
+  "resourceType": "Encounter",
+  "id": "example-id",
+  "status": "finished",
+  "class": [
+    {
+      "coding": [{
+        "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+        "code": "EMER",
+        "display": "emergency"
+      }]
+    }
+  ],
+  "subject": {
+    "reference": "Patient/patient-id"
+  }
+}""",
+            "Observation": """
+OBSERVATION SPECIFIC GUIDANCE:
+- status: REQUIRED. Must be one of: registered, preliminary, final, amended, corrected, cancelled, entered-in-error, unknown
+- code: REQUIRED. Use CodeableConcept describing what was observed
+- subject: REQUIRED. Reference to Patient resource
+- component: For multi-component observations (like vital signs panel)
+  * Each component needs: code (what was measured), and value[x] (the measurement)
+  * Use valueQuantity for numeric measurements
+  * DO NOT use "valueComponent" - this field doesn't exist
+  * referenceRange: Must be a LIST (array), not a single object
+- Use LOINC codes when possible (system: "http://loinc.org")
+
+CRITICAL: If using referenceRange in components, it must be an array:
+  "referenceRange": [{"text": "Normal range"}]  // CORRECT
+  "referenceRange": {"text": "Normal range"}    // WRONG - causes validation error
+
+Example minimal Observation:
+{
+  "resourceType": "Observation",
+  "id": "example-id",
+  "status": "final",
+  "code": {
+    "text": "Blood pressure"
+  },
+  "subject": {
+    "reference": "Patient/patient-id"
+  },
+  "valueQuantity": {
+    "value": 120,
+    "unit": "mmHg",
+    "system": "http://unitsofmeasure.org",
+    "code": "mm[Hg]"
+  }
+}""",
+            "Procedure": """
+PROCEDURE SPECIFIC GUIDANCE:
+- status: REQUIRED. Must be one of: preparation, in-progress, not-done, on-hold, stopped, completed, entered-in-error, unknown
+- subject: REQUIRED. Reference to Patient resource
+- code: REQUIRED. Use CodeableConcept with at least 'text' field describing the procedure
+- encounter: Reference to Encounter if available
+- Use SNOMED CT codes when possible (system: "http://snomed.info/sct")
+- CRITICAL: DO NOT include performedDateTime or performedPeriod fields - they cause validation errors in this library version
+
+Example minimal Procedure (USE EXACTLY THIS STRUCTURE):
+{
+  "resourceType": "Procedure",
+  "id": "example-id",
+  "status": "completed",
+  "code": {
+    "text": "Cardiac catheterization"
+  },
+  "subject": {
+    "reference": "Patient/patient-id"
+  }
+}""",
+            "MedicationRequest": """
+MEDICATION REQUEST SPECIFIC GUIDANCE:
+- status: REQUIRED. Must be one of: active, on-hold, cancelled, completed, entered-in-error, stopped, draft, unknown
+- intent: REQUIRED. Must be one of: proposal, plan, order, original-order, reflex-order, filler-order, instance-order, option
+- medication: REQUIRED. This is a CodeableReference type with structure:
+  * Use "concept" subfield containing a CodeableConcept
+  * The CodeableConcept should have at least a "text" field
+- subject: REQUIRED. Reference to Patient resource
+- authoredOn: When the prescription was written
+- requester: Reference to Practitioner if available
+- Use RxNorm codes when possible (system: "http://www.nlm.nih.gov/research/umls/rxnorm")
+
+IMPORTANT: The field is named "medication" with a nested "concept" object
+
+Example minimal MedicationRequest:
+{
+  "resourceType": "MedicationRequest",
+  "id": "example-id",
+  "status": "active",
+  "intent": "order",
+  "medication": {
+    "concept": {
+      "text": "Aspirin 325mg"
+    }
+  },
+  "subject": {
+    "reference": "Patient/patient-id"
+  }
+}""",
+            "MedicationAdministration": """
+MEDICATION ADMINISTRATION SPECIFIC GUIDANCE:
+- status: REQUIRED. Must be one of: in-progress, not-done, on-hold, completed, entered-in-error, stopped, unknown
+- medication: REQUIRED. This is a CodeableReference type with structure:
+  * Use "concept" subfield containing a CodeableConcept
+  * The CodeableConcept should have at least a "text" field
+- subject: REQUIRED. Reference to Patient resource
+- occurenceDateTime or occurencePeriod: When medication was given (use occurenceDateTime for single point in time)
+- Use RxNorm codes when possible (system: "http://www.nlm.nih.gov/research/umls/rxnorm")
+
+IMPORTANT: Field is named "medication" with nested "concept", and timing field is "occurenceDateTime"
+
+Example minimal MedicationAdministration:
+{
+  "resourceType": "MedicationAdministration",
+  "id": "example-id",
+  "status": "completed",
+  "medication": {
+    "concept": {
+      "text": "Aspirin 325mg"
+    }
+  },
+  "subject": {
+    "reference": "Patient/patient-id"
+  },
+  "occurenceDateTime": "2024-01-15T11:00:00Z"
+}""",
+            "Practitioner": """
+PRACTITIONER SPECIFIC GUIDANCE:
+- No fields are strictly required, but should include identifiable information
+- active: Boolean indicating if the practitioner's record is in active use
+- name: Use HumanName structure with family and given names
+- identifier: Use to store professional identifiers (NPI, license numbers, etc.)
+- qualification: Professional qualifications, certifications
+
+Example minimal Practitioner:
+{
+  "resourceType": "Practitioner",
+  "id": "example-id",
+  "active": true,
+  "name": [{
+    "family": "Smith",
+    "given": ["John"],
+    "prefix": ["Dr."]
+  }]
+}""",
+            "Organization": """
+ORGANIZATION SPECIFIC GUIDANCE:
+- No fields are strictly required, but should include identifiable information
+- active: Boolean indicating if the organization's record is in active use
+- name: Name of the organization
+- type: Kind of organization (hospital, department, etc.)
+- DO NOT include address field unless you have complete address information
+- If you include address, ALL string fields (city, state, country, postalCode) must be non-empty and match pattern '[ \\r\\n\\t\\S]+'
+
+Example minimal Organization (without address):
+{
+  "resourceType": "Organization",
+  "id": "example-id",
+  "active": true,
+  "name": "Sample Hospital",
+  "type": [{
+    "text": "Healthcare Provider"
+  }]
+}""",
+            "Location": """
+LOCATION SPECIFIC GUIDANCE:
+- status: Status of the location (active, suspended, inactive)
+- name: Name of the location
+- type: Type of location (e.g., Emergency Department, ICU)
+- DO NOT include address field unless you have complete address information
+- If you include address, ALL string fields (city, state, country, postalCode) must be non-empty and match pattern '[ \\r\\n\\t\\S]+'
+
+Example minimal Location (without address):
+{
+  "resourceType": "Location",
+  "id": "example-id",
+  "status": "active",
+  "name": "Emergency Department",
+  "type": [{
+    "coding": [{
+      "system": "http://terminology.hl7.org/CodeSystem/v3-RoleCode",
+      "code": "EMD",
+      "display": "Emergency Department"
+    }]
+  }]
+}""",
+            "DiagnosticReport": """
+DIAGNOSTIC REPORT SPECIFIC GUIDANCE:
+- status: REQUIRED. Must be one of: registered, partial, preliminary, final, amended, corrected, appended, cancelled, entered-in-error, unknown
+- code: REQUIRED. Type of diagnostic report (use LOINC codes when possible)
+- subject: REQUIRED. Reference to Patient
+- encounter: Reference to Encounter if available
+- effectiveDateTime or effectivePeriod: Time of report
+- issued: REQUIRED. Date/time report was issued
+- result: References to Observation resources
+- Use LOINC codes when possible (system: "http://loinc.org")
+
+Example minimal DiagnosticReport:
+{
+  "resourceType": "DiagnosticReport",
+  "id": "example-id",
+  "status": "final",
+  "code": {
+    "text": "ECG Report"
+  },
+  "subject": {
+    "reference": "Patient/patient-id"
+  },
+  "issued": "2024-01-15T10:30:00Z"
+}""",
+            "Immunization": """
+IMMUNIZATION SPECIFIC GUIDANCE:
+- status: REQUIRED. Must be one of: completed, entered-in-error, not-done
+- vaccineCode: REQUIRED. Vaccine product administered (use CVX codes when possible)
+- patient: REQUIRED. Reference to Patient
+- occurrenceDateTime or occurrenceString: REQUIRED. When immunization occurred
+- primarySource: Boolean indicating if data came from primary source
+- Use CVX codes for vaccines (system: "http://hl7.org/fhir/sid/cvx")
+
+Example minimal Immunization:
+{
+  "resourceType": "Immunization",
+  "id": "example-id",
+  "status": "completed",
+  "vaccineCode": {
+    "text": "COVID-19 vaccine"
+  },
+  "patient": {
+    "reference": "Patient/patient-id"
+  },
+  "occurrenceDateTime": "2024-01-15"
+}""",
+        }
+
+        return guidance_map.get(resource_type, "")
 
     def _create_bundle(self, resources: List[Dict[str, Any]]) -> FHIRPatientData:
         """Create a FHIR Bundle from generated resources."""

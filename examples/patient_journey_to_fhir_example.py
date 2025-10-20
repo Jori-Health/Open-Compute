@@ -84,7 +84,7 @@ def example_basic_usage():
 
     # Additional context about the patient
     patient_context = """
-    Patient is a 58-year-old male with history of hypertension.
+    Patient is named John Doe and is a 58-year-old male with history of hypertension.
     No prior cardiac events.
     Non-smoker, occasional alcohol use.
     """
@@ -97,7 +97,7 @@ def example_basic_usage():
         patient_context=patient_context,
         model="gpt-4o-mini",
         fhir_version="R4",
-        max_iterations=1,
+        max_iterations=3,
         auto_save=True,  # Automatically saves to output/firstname_lastname/ folder
     )
 
