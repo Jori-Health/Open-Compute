@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "open-compute"
-version = "0.0.6"
-description = "Open Compute - utilities by Jori Health"
+version = "0.0.7"
+description = "Open Compute - multi-agent systems for healthtech"
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [
-  { name = "Jori Health", email = "engineering@jori.health" }
+  { name = "Jori Health", email = "bryan@jori.health" }
 ]
 license = { text = "MIT" }
 classifiers = [
