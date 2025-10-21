@@ -8,8 +8,6 @@ Open Compute is a powerful Python library that uses AI agents to transform patie
 
 ### Installation
 
-#### Option 1: Install from GitHub (Recommended)
-
 ```bash
 pip install open-compute
 ```
