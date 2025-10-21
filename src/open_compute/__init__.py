@@ -5,7 +5,6 @@ from .types import (
     USCoreSTU,
     US_CORE_STU_TO_URL,
 )
-from .agents.fhir_to_journey import fhir_to_journey
 from .agents.journey_to_fhir import journey_to_fhir
 from .agents.ai_journey_to_fhir import (
     AIJourneyToFHIR,
@@ -32,7 +31,6 @@ __all__ = [
     "FHIRPatientData",
     "PatientJourney",
     "JourneyStage",
-    "fhir_to_journey",
     "journey_to_fhir",
     "AIJourneyToFHIR",
     "generate_fhir_from_journey",

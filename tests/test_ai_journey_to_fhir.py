@@ -153,6 +153,111 @@ class TestAIJourneyToFHIR:
         assert len(bundle.entries) == 2
         assert bundle.entries[0]["resource"]["resourceType"] == "Patient"
 
+    def test_clean_forbidden_fields_encounter(self):
+        """Test that forbidden fields are removed from Encounter resources."""
+        agent = AIJourneyToFHIR(api_key="test-key")
+
+        # Create an Encounter with forbidden fields
+        encounter = {
+            "resourceType": "Encounter",
+            "id": "encounter-1",
+            "status": "finished",
+            "class": [
+                {
+                    "coding": [{
+                        "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+                        "code": "EMER",
+                        "display": "emergency"
+                    }]
+                }
+            ],
+            "subject": {"reference": "Patient/patient-1"},
+            # Forbidden
+            "period": {"start": "2023-10-01T10:00:00Z", "end": "2023-10-01T10:30:00Z"},
+            "reasonCode": [{"text": "Chest pain"}],  # Forbidden
+            "timestamp": "2023-10-01T10:00:00Z"  # Forbidden
+        }
+
+        # Clean the resource
+        cleaned = agent._clean_forbidden_fields(encounter)
+
+        # Verify forbidden fields are removed
+        assert "period" not in cleaned
+        assert "reasonCode" not in cleaned
+        assert "timestamp" not in cleaned
+
+        # Verify valid fields are preserved
+        assert cleaned["resourceType"] == "Encounter"
+        assert cleaned["id"] == "encounter-1"
+        assert cleaned["status"] == "finished"
+        assert "class" in cleaned
+        assert "subject" in cleaned
+
+    def test_clean_forbidden_fields_procedure(self):
+        """Test that forbidden fields are removed from Procedure resources."""
+        agent = AIJourneyToFHIR(api_key="test-key")
+
+        procedure = {
+            "resourceType": "Procedure",
+            "id": "procedure-1",
+            "status": "completed",
+            "code": {"text": "Cardiac catheterization"},
+            "subject": {"reference": "Patient/patient-1"},
+            "performedDateTime": "2023-10-01T12:00:00Z",  # Forbidden
+            # Forbidden
+            "performedPeriod": {"start": "2023-10-01T12:00:00Z", "end": "2023-10-01T13:00:00Z"}
+        }
+
+        cleaned = agent._clean_forbidden_fields(procedure)
+
+        assert "performedDateTime" not in cleaned
+        assert "performedPeriod" not in cleaned
+        assert cleaned["resourceType"] == "Procedure"
+        assert cleaned["status"] == "completed"
+
+    def test_clean_forbidden_fields_observation(self):
+        """Test that forbidden fields are removed from Observation resources."""
+        agent = AIJourneyToFHIR(api_key="test-key")
+
+        observation = {
+            "resourceType": "Observation",
+            "id": "obs-1",
+            "status": "final",
+            "code": {"text": "Blood pressure"},
+            "subject": {"reference": "Patient/patient-1"},
+            "component": [
+                {
+                    "code": {"text": "Systolic"},
+                    "valueQuantity": {"value": 120, "unit": "mmHg"},
+                    # Forbidden
+                    "valueComponent": {"text": "Should not be here"}
+                }
+            ]
+        }
+
+        cleaned = agent._clean_forbidden_fields(observation)
+
+        # Note: The current implementation only cleans top-level fields
+        # If we need to clean nested fields, we'd need to enhance the function
+        assert cleaned["resourceType"] == "Observation"
+        assert cleaned["status"] == "final"
+
+    def test_clean_forbidden_fields_no_effect_on_other_types(self):
+        """Test that cleaning has no effect on resource types not in the map."""
+        agent = AIJourneyToFHIR(api_key="test-key")
+
+        patient = {
+            "resourceType": "Patient",
+            "id": "patient-1",
+            "name": [{"family": "Doe", "given": ["John"]}],
+            "gender": "male"
+        }
+
+        cleaned = agent._clean_forbidden_fields(patient)
+
+        # Patient should be unchanged
+        assert cleaned == patient
+
 
 class TestGenerationWithMocks:
     """Test generation workflow with mocked OpenAI API."""

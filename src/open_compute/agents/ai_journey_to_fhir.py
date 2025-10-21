@@ -125,6 +125,27 @@ class AIJourneyToFHIR:
         if self.auto_save:
             Path(self.save_directory).mkdir(parents=True, exist_ok=True)
 
+    def _run_async_safely(self, coroutine):
+        """
+        Run an async coroutine safely, handling both sync and async contexts.
+
+        Args:
+            coroutine: The coroutine to run
+
+        Returns:
+            The result of the coroutine
+        """
+        try:
+            # Try to get the current event loop
+            loop = asyncio.get_running_loop()
+            # If we're already in an async context, create a new thread event loop
+            import nest_asyncio
+            nest_asyncio.apply()
+            return asyncio.run(coroutine)
+        except RuntimeError:
+            # No event loop is running, we can safely use asyncio.run
+            return asyncio.run(coroutine)
+
     def generate_from_journey(
         self, journey: PatientJourney, patient_context: Optional[str] = None
     ) -> GenerationResult:
@@ -344,11 +365,15 @@ CRITICAL RULES - READ CAREFULLY:
 - Use the journey stages as the ONLY source of truth for clinical events
 - When in doubt, DO NOT include a resource - be conservative
 
-FORBIDDEN FIELDS - DO NOT suggest these in key_data (they cause validation errors in FHIR R5):
-- For Encounter: DO NOT suggest "period", "reasonCode", or "timestamp"
+FORBIDDEN FIELDS - DO NOT suggest these in key_data (they cause validation errors):
+- For Encounter: DO NOT suggest "period", "start", "end", "reasonCode", or "timestamp" 
+  * These fields cause "Extra inputs are not permitted" errors in the validation library
+  * If you need timing information, DO NOT include it in the Encounter resource
 - For Procedure: DO NOT suggest "performedDateTime" or "performedPeriod"
+  * These fields are not supported in this library version
 - For Observation: DO NOT suggest "valueComponent" in components
-- These fields don't exist or have different structures in the validation library
+  * This field doesn't exist in the validation library
+- These fields will cause the resource to fail validation no matter how they're formatted
 
 EXAMPLES OF WHAT NOT TO DO:
 - If journey mentions "diabetes", DON'T add resources for typical diabetes complications unless explicitly mentioned
@@ -368,7 +393,7 @@ Return your response as a JSON object with this structure:
         {{
             "resourceType": "Encounter",
             "description": "Hospital admission encounter",
-            "key_data": ["status", "class", "subject reference"]
+            "key_data": ["status: finished or in-progress", "class: EMER/IMP/AMB code", "subject reference to Patient"]
         }},
         {{
             "resourceType": "Practitioner",
@@ -466,7 +491,7 @@ Remember: Your rationale should explain how each clinical resource is directly m
                 print("   📡 Making concurrent API calls...")
 
                 start_time = time.time()
-                batch_results = asyncio.run(
+                batch_results = self._run_async_safely(
                     self._generate_resources_parallel(
                         resources_to_generate, journey, generated_resources, patient_context, initial_plan.resource_id_map
                     )
@@ -513,7 +538,7 @@ Remember: Your rationale should explain how each clinical resource is directly m
                     print("   📡 Making concurrent fix API calls...")
 
                     start_time = time.time()
-                    fix_results = asyncio.run(
+                    fix_results = self._run_async_safely(
                         self._fix_resources_parallel(
                             validation_data, journey, generated_resources, patient_context, initial_plan.resource_id_map
                         )
@@ -684,6 +709,29 @@ Remember: Your rationale should explain how each clinical resource is directly m
             planning_details=initial_plan,
         )
 
+    def _format_key_data(self, key_data: List[Any]) -> str:
+        """
+        Format key_data for prompt, handling both strings and dicts.
+
+        Args:
+            key_data: List of key data points (strings or dicts)
+
+        Returns:
+            Formatted string of key data
+        """
+        if not key_data:
+            return 'All relevant data from journey'
+
+        formatted_items = []
+        for item in key_data:
+            if isinstance(item, dict):
+                # Convert dict to string representation
+                formatted_items.append(json.dumps(item))
+            else:
+                formatted_items.append(str(item))
+
+        return ', '.join(formatted_items)
+
     def _generate_single_resource(
         self,
         resource_spec: Dict[str, Any],
@@ -737,7 +785,7 @@ Patient Journey:
 
 Resource to Generate: {resource_type}
 Description: {description}
-Key Data Points: {', '.join(key_data) if key_data else 'All relevant data from journey'}
+Key Data Points: {self._format_key_data(key_data)}
 
 Already Generated Resources:
 {existing_resources_summary}
@@ -792,6 +840,9 @@ Return the resource as a valid JSON object."""
             # Ensure the assigned ID is used
             if assigned_id:
                 resource["id"] = assigned_id
+
+            # Clean forbidden fields before validation
+            resource = self._clean_forbidden_fields(resource)
 
             return resource
 
@@ -852,7 +903,7 @@ Patient Journey:
 
 Resource to Generate: {resource_type}
 Description: {description}
-Key Data Points: {', '.join(key_data) if key_data else 'All relevant data from journey'}
+Key Data Points: {self._format_key_data(key_data)}
 
 Already Generated Resources:
 {existing_resources_summary}
@@ -907,6 +958,9 @@ Return the resource as a valid JSON object."""
             # Ensure the assigned ID is used
             if assigned_id:
                 resource["id"] = assigned_id
+
+            # Clean forbidden fields before validation
+            resource = self._clean_forbidden_fields(resource)
 
             return resource
 
@@ -1086,6 +1140,9 @@ Return the fixed resource as a valid JSON object."""
                 if assigned_id:
                     fixed_resource["id"] = assigned_id
 
+                # Clean forbidden fields before validation
+                fixed_resource = self._clean_forbidden_fields(fixed_resource)
+
                 # Validate the fixed resource
                 fixed_validation = self.validator.validate(fixed_resource)
 
@@ -1223,6 +1280,9 @@ Return the fixed resource as a valid JSON object."""
                 # Ensure the assigned ID is preserved
                 if assigned_id:
                     fixed_resource["id"] = assigned_id
+
+                # Clean forbidden fields before validation
+                fixed_resource = self._clean_forbidden_fields(fixed_resource)
 
                 # Validate the fixed resource
                 fixed_validation = self.validator.validate(fixed_resource)
@@ -1483,11 +1543,18 @@ ENCOUNTER SPECIFIC GUIDANCE:
     - "IMP" for inpatient encounters  
     - "AMB" for ambulatory/outpatient
 - subject: REQUIRED. Reference to Patient resource
-- CRITICAL: DO NOT include these fields (they cause validation errors):
-  * period - Not supported in this library version
-  * reasonCode - Not supported (use 'reason' if needed, but best to omit)
 
-Example minimal Encounter (USE EXACTLY THIS STRUCTURE):
+⚠️  CRITICAL - THESE FIELDS WILL CAUSE VALIDATION ERRORS - DO NOT USE THEM:
+  * period - This field causes "Extra inputs are not permitted" error
+  * start - This field causes "Extra inputs are not permitted" error
+  * end - This field causes "Extra inputs are not permitted" error
+  * reasonCode - Not supported in this library version
+  * timestamp - Not supported in this library version
+  
+❌ DO NOT include timing/date information in Encounter resources
+✅ If you need to track timing, put it in the journey metadata only
+
+Example minimal Encounter (COPY THIS STRUCTURE EXACTLY - DO NOT ADD ANY OTHER FIELDS):
 {
   "resourceType": "Encounter",
   "id": "example-id",
@@ -1725,6 +1792,36 @@ Example minimal Immunization:
         }
 
         return guidance_map.get(resource_type, "")
+
+    def _clean_forbidden_fields(self, resource: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Remove forbidden fields that cause validation errors from a resource.
+
+        Args:
+            resource: The FHIR resource dict
+
+        Returns:
+            Cleaned resource dict
+        """
+        resource_type = resource.get("resourceType")
+
+        # Map of resource types to forbidden fields
+        forbidden_fields_map = {
+            "Encounter": ["period", "start", "end", "reasonCode", "timestamp"],
+            "Procedure": ["performedDateTime", "performedPeriod"],
+            "Observation": ["valueComponent"],
+        }
+
+        forbidden_fields = forbidden_fields_map.get(resource_type, [])
+
+        if forbidden_fields:
+            for field in forbidden_fields:
+                if field in resource:
+                    print(
+                        f"  ⚠️  Removing forbidden field '{field}' from {resource_type}")
+                    del resource[field]
+
+        return resource
 
     def _create_bundle(self, resources: List[Dict[str, Any]]) -> FHIRPatientData:
         """Create a FHIR Bundle from generated resources."""

@@ -1,10 +1,26 @@
+# Environment
 .env
 .venv
-
-
 /.env
 /.venv
 
+# Output
 output
 /output
 output/
+
+# Python build artifacts
+*.egg-info/
+dist/
+build/
+*.pyc
+__pycache__/
+*.so
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
