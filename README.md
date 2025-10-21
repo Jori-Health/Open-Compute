@@ -12,17 +12,13 @@ Open Compute is a powerful Python library that uses AI agents to transform patie
 pip install open-compute
 ```
 
-### Prerequisites
+### Requirements
 
 - **Python 3.9+**
 - **OpenAI API Key**: Set as environment variable
   ```bash
   export OPENAI_API_KEY='your-api-key-here'
   ```
-
-## Key Features
-
-- **Convert patient Journeys to FHIR data**
 
 ## Usage
 
