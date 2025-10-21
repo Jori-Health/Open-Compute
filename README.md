@@ -1,18 +1,8 @@
 # Open Compute
 
-**Open-source agentic AI for health-tech **
+**Open-source agentic AI for health-tech**
 
 Open Compute is a powerful Python library that uses AI agents to transform patient journeys into standards-compliant FHIR (Fast Healthcare Interoperability Resources) data. Built by [Jori Health](https://jori.health), this tool enables healthcare developers to bridge the gap between narrative patient experiences and structured healthcare data.
-
-## ✨ Key Features
-
-- **🤖 AI-Powered FHIR Generation**: Use OpenAI models to intelligently generate comprehensive FHIR resources from patient journeys
-- **✅ Automatic Validation**: Built-in FHIR schema validation with iterative error correction
-- **📦 Multiple Output Formats**: Generate FHIR Bundles (JSON) and Bulk FHIR (JSONL) formats
-- **🔄 Parallel Processing**: Fast resource generation with parallel API calls
-- **📊 Enhanced Context**: Leverages FHIR profiles, value sets, and search parameters for accurate resource generation
-- **💾 Auto-Save**: Automatically saves generated resources with organized file structure
-- **🎯 FHIR Version Support**: Compatible with FHIR R4, R4B, R5, and STU3
 
 ## Quick Start
 
@@ -31,6 +21,10 @@ pip install open-compute
   ```bash
   export OPENAI_API_KEY='your-api-key-here'
   ```
+
+## Key Features
+
+- **Convert patient Journeys to FHIR data**
 
 ## Usage
 
