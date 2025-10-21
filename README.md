@@ -167,69 +167,7 @@ The example demonstrates:
 - Validating generated resources
 - Auto-saving to organized output directory
 
-### Example Output
-
-```
-Patient Journey to FHIR Generation
-============================================================
-
-These examples will use the OpenAI API to generate FHIR resources.
-This may take a minute or two...
-
-============================================================
-Example 1: Basic Usage
-============================================================
-
-============================================================
-Generation Results
-============================================================
-Success: True
-Iterations: 1
-Resources Generated: 8
-
-Generated Resources:
-  1. Patient/pat-john-doe
-  2. Encounter/enc-emergency-visit
-  3. Observation/obs-blood-pressure
-  4. Observation/obs-heart-rate
-  5. Condition/cond-acute-mi
-  6. MedicationStatement/med-aspirin
-  7. MedicationStatement/med-nitroglycerin
-  8. Procedure/proc-cardiac-cath
-
-✅ Files saved to: output/john_doe/
-```
-
-## 🧪 Testing
-
-Run the test suite:
-
-```bash
-# Install test dependencies
-pip install pytest pytest-cov
-
-# Run all tests
-pytest
-
-# Run with coverage
-pytest --cov=src/open_compute tests/
-
-# Run specific test file
-pytest tests/test_ai_journey_to_fhir.py
-```
-
-## 🏗️ Architecture
-
-Open Compute uses an **agentic AI architecture** with the following workflow:
-
-1. **Planning**: AI analyzes the patient journey and determines which FHIR resources to generate
-2. **Generation**: AI generates each FHIR resource with appropriate content and references
-3. **Validation**: Each resource is validated against FHIR schemas
-4. **Error Correction**: If validation fails, AI automatically corrects errors
-5. **Completeness Check**: AI verifies all journey stages are represented
-6. **Iteration**: Process repeats until complete or max iterations reached
-
-## 🤝 Contributing
+## Contributing
 
 We welcome contributions! Open Compute is an open-source project and we'd love your help.
 
@@ -251,7 +189,7 @@ We welcome contributions! Open Compute is an open-source project and we'd love y
 6. Push to the branch (`git push origin feature/amazing-feature`)
 7. Open a Pull Request
 
-## 📄 License
+## License
 
 MIT License - see [LICENSE](LICENSE) for details
 
