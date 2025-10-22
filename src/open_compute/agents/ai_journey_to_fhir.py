@@ -12,9 +12,7 @@ import asyncio
 import uuid
 import time
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional, Literal, Tuple
-from pathlib import Path
-from datetime import datetime
+from typing import Dict, Any, List, Optional, Literal
 
 try:
     from openai import OpenAI, AsyncOpenAI
@@ -72,8 +70,6 @@ class AIJourneyToFHIR:
         max_fix_retries: int = 3,
         fhir_schema_path: Optional[str] = None,
         fhir_data_directory: Optional[str] = None,
-        auto_save: bool = True,
-        save_directory: str = "output",
         parallel_generation: bool = True,
         use_enhanced_context: bool = True,
         llm_provider: Optional[str] = None,
@@ -89,20 +85,19 @@ class AIJourneyToFHIR:
             max_fix_retries: Maximum number of attempts to fix validation errors per resource
             fhir_schema_path: Optional path to fhir.schema.json file (legacy, use fhir_data_directory instead)
             fhir_data_directory: Optional path to directory containing all FHIR data files (recommended)
-            auto_save: Automatically save successful FHIR bundles to disk
-            save_directory: Directory to save generated bundles (default: "output")
             parallel_generation: Use parallel generation for faster results (recommended)
             use_enhanced_context: Use enhanced context with valuesets, profiles, etc. (recommended)
             llm_provider: LLM provider to use ("openai" or "groq", defaults to LLM_PROVIDER env var or "openai")
         """
         # Determine the LLM provider
-        self.llm_provider = (llm_provider or os.getenv("LLM_PROVIDER", "openai")).lower()
-        
+        self.llm_provider = (llm_provider or os.getenv(
+            "LLM_PROVIDER", "openai")).lower()
+
         if self.llm_provider not in ["openai", "groq"]:
             raise ValueError(
                 f"Invalid LLM provider: {self.llm_provider}. Must be 'openai' or 'groq'"
             )
-        
+
         # Get the appropriate API key based on provider
         if self.llm_provider == "groq":
             self.api_key = api_key or os.getenv("GROQ_API_KEY")
@@ -128,7 +123,7 @@ class AIJourneyToFHIR:
             # Initialize OpenAI clients
             self.client = OpenAI(api_key=self.api_key)
             self.async_client = AsyncOpenAI(api_key=self.api_key)
-        
+
         self.model = model
         self.fhir_version = fhir_version
         self.max_iterations = max_iterations
@@ -145,13 +140,7 @@ class AIJourneyToFHIR:
             self.data_loader = None
             self.schema_loader = get_schema_loader(fhir_schema_path)
 
-        self.auto_save = auto_save
-        self.save_directory = save_directory
         self.parallel_generation = parallel_generation
-
-        # Create output directory if auto_save is enabled
-        if self.auto_save:
-            Path(self.save_directory).mkdir(parents=True, exist_ok=True)
 
     def _run_async_safely(self, coroutine):
         """
@@ -198,7 +187,6 @@ class AIJourneyToFHIR:
         print(f"FHIR Version: {self.fhir_version}")
         print(
             f"Parallel Generation: {'Enabled' if self.parallel_generation else 'Disabled'}")
-        print(f"Auto-Save: {'Enabled' if self.auto_save else 'Disabled'}")
         print("=" * 70)
 
         # Step 1: Create a generation plan
@@ -223,133 +211,7 @@ class AIJourneyToFHIR:
             f"\n⚙️  STEP 2: Generating Resources (max {self.max_iterations} iterations)...")
         result = self._iterative_generation(journey, plan, patient_context)
 
-        # Step 3: Auto-save if enabled and there's data to save (even if generation wasn't fully successful)
-        if self.auto_save and result.fhir_data:
-            print(f"\n💾 STEP 3: Auto-Saving Bundle...")
-            status_text = "complete" if result.success else "partial (incomplete generation)"
-            print(
-                f"   Saving {status_text} bundle with {len(result.generated_resources)} resources...")
-            saved_path = self._save_bundle(result.fhir_data, journey)
-            if saved_path:
-                print(f"✓ Auto-saved FHIR bundle to: {saved_path}")
-            else:
-                print(f"⚠️  Failed to save bundle to disk")
-
         return result
-
-    def _extract_patient_name(self, fhir_data: FHIRPatientData) -> Tuple[str, str]:
-        """
-        Extract patient's first and last name from the Patient resource.
-
-        Args:
-            fhir_data: FHIR bundle containing resources
-
-        Returns:
-            Tuple of (first_name, last_name). Returns ('unknown', 'patient') if not found.
-        """
-        for entry in fhir_data.entries:
-            resource = entry.get("resource", {})
-            if resource.get("resourceType") == "Patient":
-                # Look for name in the Patient resource
-                names = resource.get("name", [])
-                if names and len(names) > 0:
-                    name = names[0]  # Get the first name entry
-                    given = name.get("given", [])
-                    family = name.get("family", "")
-
-                    first_name = given[0] if given else "unknown"
-                    last_name = family if family else "patient"
-
-                    # Sanitize names for use in folder names
-                    first_name = "".join(
-                        c if c.isalnum() else "_" for c in str(first_name).lower())
-                    last_name = "".join(
-                        c if c.isalnum() else "_" for c in str(last_name).lower())
-
-                    return first_name, last_name
-
-        return "unknown", "patient"
-
-    def _save_bundle(self, fhir_data: FHIRPatientData, journey: PatientJourney) -> Optional[str]:
-        """
-        Save FHIR data to disk in both Bundle and BULK FHIR formats.
-
-        Args:
-            fhir_data: FHIR bundle to save
-            journey: Original journey (for filename)
-
-        Returns:
-            Path to generation folder, or None if save failed
-        """
-        try:
-            # Extract patient name from resources
-            first_name, last_name = self._extract_patient_name(fhir_data)
-            patient_folder_name = f"{first_name}_{last_name}"
-
-            # Create patient-specific folder under output directory
-            patient_dir = Path(self.save_directory) / patient_folder_name
-            patient_dir.mkdir(parents=True, exist_ok=True)
-
-            # 1. Save Patient Bundle version
-            bundle = {
-                "resourceType": "Bundle",
-                "type": "collection",
-                "timestamp": datetime.now().isoformat(),
-                "entry": fhir_data.entries,
-            }
-
-            bundle_filepath = patient_dir / "patient_bundle.json"
-            with open(bundle_filepath, 'w') as f:
-                json.dump(bundle, f, indent=2)
-
-            print(f"   ✓ Saved Patient Bundle: {bundle_filepath}")
-
-            # 2. Save Bulk FHIR version (single JSONL file with all resources)
-            bulk_filepath = patient_dir / "bulk_fhir.jsonl"
-            with open(bulk_filepath, 'w') as f:
-                for entry in fhir_data.entries:
-                    resource = entry.get("resource", {})
-                    f.write(json.dumps(resource) + '\n')
-
-            resource_count = len(fhir_data.entries)
-            print(
-                f"   ✓ Saved Bulk FHIR ({resource_count} resources): {bulk_filepath}")
-
-            # 3. Group resources by type for summary
-            resources_by_type = {}
-            for entry in fhir_data.entries:
-                resource = entry.get("resource", {})
-                resource_type = resource.get("resourceType", "Unknown")
-
-                if resource_type not in resources_by_type:
-                    resources_by_type[resource_type] = []
-                resources_by_type[resource_type].append(resource)
-
-            # 4. Create a README with metadata
-            patient_id = journey.patient_id or "unknown"
-            readme_filepath = patient_dir / "README.txt"
-            with open(readme_filepath, 'w') as f:
-                f.write(f"FHIR Generation Results\n")
-                f.write(f"=" * 50 + "\n\n")
-                f.write(f"Patient: {first_name.title()} {last_name.title()}\n")
-                f.write(f"Patient ID: {patient_id}\n")
-                f.write(f"Generated: {datetime.now().isoformat()}\n")
-                f.write(f"FHIR Version: {self.fhir_version}\n")
-                f.write(f"Model: {self.model}\n\n")
-                f.write(f"Files:\n")
-                f.write(
-                    f"  - patient_bundle.json: Complete FHIR Bundle with all resources\n")
-                f.write(
-                    f"  - bulk_fhir.jsonl: All resources in JSONL format (one resource per line)\n\n")
-                f.write(f"Resource Summary:\n")
-                for resource_type, resources in sorted(resources_by_type.items()):
-                    f.write(f"  - {resource_type}: {len(resources)}\n")
-
-            return str(patient_dir)
-
-        except Exception as e:
-            print(f"Warning: Could not save bundle: {e}")
-            return None
 
     def _create_generation_plan(
         self, journey: PatientJourney, patient_context: Optional[str] = None
@@ -1875,8 +1737,6 @@ def generate_fhir_from_journey(
     max_fix_retries: int = 3,
     fhir_schema_path: Optional[str] = None,
     fhir_data_directory: Optional[str] = None,
-    auto_save: bool = True,
-    save_directory: str = "output",
     parallel_generation: bool = True,
     use_enhanced_context: bool = True,
     llm_provider: Optional[str] = None,
@@ -1894,8 +1754,6 @@ def generate_fhir_from_journey(
         max_fix_retries: Maximum number of attempts to fix validation errors per resource
         fhir_schema_path: Optional path to fhir.schema.json file (legacy)
         fhir_data_directory: Optional path to directory containing all FHIR data files (recommended)
-        auto_save: Automatically save successful FHIR bundles to disk (default: True)
-        save_directory: Directory to save generated bundles (default: "output")
         parallel_generation: Use parallel generation for faster results (default: True)
         use_enhanced_context: Use enhanced context with valuesets, profiles, etc. (default: True, recommended)
         llm_provider: LLM provider to use ("openai" or "groq", defaults to LLM_PROVIDER env var or "openai")
@@ -1911,8 +1769,6 @@ def generate_fhir_from_journey(
         max_fix_retries=max_fix_retries,
         fhir_schema_path=fhir_schema_path,
         fhir_data_directory=fhir_data_directory,
-        auto_save=auto_save,
-        save_directory=save_directory,
         parallel_generation=parallel_generation,
         use_enhanced_context=use_enhanced_context,
         llm_provider=llm_provider,
