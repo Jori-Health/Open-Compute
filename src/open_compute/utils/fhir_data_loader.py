@@ -45,9 +45,10 @@ class FHIRDataLoader:
 
         # Try common locations
         possible_paths = [
-            # Project data directory
-            Path(__file__).parent.parent.parent.parent /
-            "data" / "fhir" / "STU6",
+            # Package data directory (installed package)
+            Path(__file__).parent.parent / "data" / "fhir" / "STU6",
+            # Project data directory (for development)
+            Path(__file__).parent.parent.parent.parent / "data" / "fhir" / "STU6",
             # Desktop location
             Path.home() / "Desktop" / "definitions.json",
             # Current working directory

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "open-compute"
-version = "0.1.8"
+version = "0.1.9"
 description = "Open Compute - multi-agent systems for healthtech"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -31,10 +31,14 @@ Homepage = "https://github.com/jori-health/open-compute"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["jori_health*", "open_compute*"]
+
+[tool.setuptools.package-data]
+"open_compute" = ["data/**/*", "data/**/*.json", "data/fhir/STU6/*"]
 
 [project.optional-dependencies]
 dev = [

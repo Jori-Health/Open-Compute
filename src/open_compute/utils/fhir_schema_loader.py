@@ -32,13 +32,12 @@ class FHIRSchemaLoader:
         else:
             # Try common locations
             possible_paths = [
-                # Project data directory
-                Path(__file__).parent.parent.parent.parent /
-                "data" / "fhir" / "STU6" / "fhir.schema.json",
+                # Package data directory (installed package)
+                Path(__file__).parent.parent / "data" / "fhir" / "STU6" / "fhir.schema.json",
+                # Project data directory (for development)
+                Path(__file__).parent.parent.parent.parent / "data" / "fhir" / "STU6" / "fhir.schema.json",
                 # Desktop location
                 Path.home() / "Desktop" / "definitions.json" / "fhir.schema.json",
-                # Project root
-                Path(__file__).parent.parent.parent.parent / "fhir.schema.json",
                 # Current working directory
                 Path.cwd() / "fhir.schema.json",
                 Path.cwd() / "data" / "fhir" / "STU6" / "fhir.schema.json",
