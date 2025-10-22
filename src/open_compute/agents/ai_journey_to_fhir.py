@@ -76,13 +76,14 @@ class AIJourneyToFHIR:
         save_directory: str = "output",
         parallel_generation: bool = True,
         use_enhanced_context: bool = True,
+        llm_provider: Optional[str] = None,
     ):
         """
         Initialize the AI agent.
 
         Args:
-            api_key: OpenAI API key (defaults to OPENAI_API_KEY env var)
-            model: OpenAI model to use
+            api_key: API key for the LLM provider (defaults to OPENAI_API_KEY or GROQ_API_KEY env var based on provider)
+            model: Model to use (e.g., "gpt-4o-mini" for OpenAI, "openai/gpt-oss-120b" for Groq)
             fhir_version: FHIR version to generate
             max_iterations: Maximum number of generation iterations
             max_fix_retries: Maximum number of attempts to fix validation errors per resource
@@ -92,15 +93,42 @@ class AIJourneyToFHIR:
             save_directory: Directory to save generated bundles (default: "output")
             parallel_generation: Use parallel generation for faster results (recommended)
             use_enhanced_context: Use enhanced context with valuesets, profiles, etc. (recommended)
+            llm_provider: LLM provider to use ("openai" or "groq", defaults to LLM_PROVIDER env var or "openai")
         """
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        if not self.api_key:
+        # Determine the LLM provider
+        self.llm_provider = (llm_provider or os.getenv("LLM_PROVIDER", "openai")).lower()
+        
+        if self.llm_provider not in ["openai", "groq"]:
             raise ValueError(
-                "OpenAI API key must be provided or set in OPENAI_API_KEY env var"
+                f"Invalid LLM provider: {self.llm_provider}. Must be 'openai' or 'groq'"
             )
-
-        self.client = OpenAI(api_key=self.api_key)
-        self.async_client = AsyncOpenAI(api_key=self.api_key)
+        
+        # Get the appropriate API key based on provider
+        if self.llm_provider == "groq":
+            self.api_key = api_key or os.getenv("GROQ_API_KEY")
+            if not self.api_key:
+                raise ValueError(
+                    "Groq API key must be provided or set in GROQ_API_KEY env var when using Groq provider"
+                )
+            # Initialize Groq clients (OpenAI-compatible with custom base URL)
+            self.client = OpenAI(
+                api_key=self.api_key,
+                base_url="https://api.groq.com/openai/v1"
+            )
+            self.async_client = AsyncOpenAI(
+                api_key=self.api_key,
+                base_url="https://api.groq.com/openai/v1"
+            )
+        else:  # openai
+            self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+            if not self.api_key:
+                raise ValueError(
+                    "OpenAI API key must be provided or set in OPENAI_API_KEY env var when using OpenAI provider"
+                )
+            # Initialize OpenAI clients
+            self.client = OpenAI(api_key=self.api_key)
+            self.async_client = AsyncOpenAI(api_key=self.api_key)
+        
         self.model = model
         self.fhir_version = fhir_version
         self.max_iterations = max_iterations
@@ -165,6 +193,7 @@ class AIJourneyToFHIR:
         print(f"Patient ID: {journey.patient_id or 'N/A'}")
         print(f"Journey Summary: {journey.summary or 'N/A'}")
         print(f"Journey Stages: {len(journey.stages)}")
+        print(f"LLM Provider: {self.llm_provider.upper()}")
         print(f"Model: {self.model}")
         print(f"FHIR Version: {self.fhir_version}")
         print(
@@ -1850,6 +1879,7 @@ def generate_fhir_from_journey(
     save_directory: str = "output",
     parallel_generation: bool = True,
     use_enhanced_context: bool = True,
+    llm_provider: Optional[str] = None,
 ) -> GenerationResult:
     """
     Convenience function to generate FHIR resources from a patient journey.
@@ -1857,8 +1887,8 @@ def generate_fhir_from_journey(
     Args:
         journey: PatientJourney to convert
         patient_context: Optional additional context about the patient
-        api_key: OpenAI API key (defaults to OPENAI_API_KEY env var)
-        model: OpenAI model to use
+        api_key: API key for the LLM provider (defaults to OPENAI_API_KEY or GROQ_API_KEY env var based on provider)
+        model: Model to use (e.g., "gpt-4o-mini" for OpenAI, "openai/gpt-oss-120b" for Groq)
         fhir_version: FHIR version to generate
         max_iterations: Maximum number of generation iterations
         max_fix_retries: Maximum number of attempts to fix validation errors per resource
@@ -1868,6 +1898,7 @@ def generate_fhir_from_journey(
         save_directory: Directory to save generated bundles (default: "output")
         parallel_generation: Use parallel generation for faster results (default: True)
         use_enhanced_context: Use enhanced context with valuesets, profiles, etc. (default: True, recommended)
+        llm_provider: LLM provider to use ("openai" or "groq", defaults to LLM_PROVIDER env var or "openai")
 
     Returns:
         GenerationResult with generated resources and validation status
@@ -1884,5 +1915,6 @@ def generate_fhir_from_journey(
         save_directory=save_directory,
         parallel_generation=parallel_generation,
         use_enhanced_context=use_enhanced_context,
+        llm_provider=llm_provider,
     )
     return agent.generate_from_journey(journey, patient_context)

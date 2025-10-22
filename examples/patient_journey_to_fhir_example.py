@@ -8,8 +8,11 @@ This example demonstrates how to:
 4. Iteratively refine until complete
 
 Requirements:
-- Set your OpenAI API key as an environment variable: OPENAI_API_KEY
-- Or pass it directly to the function
+- Set your API key as an environment variable based on provider:
+  * For OpenAI: OPENAI_API_KEY
+  * For Groq: GROQ_API_KEY
+- Set LLM_PROVIDER environment variable to "openai" or "groq" (defaults to "openai")
+- Or pass them directly to the function
 
 Run this example:
     python examples/ai_journey_to_fhir_example.py
@@ -30,6 +33,18 @@ def example_basic_usage():
     print("=" * 60)
     print("Example 1: Basic Usage")
     print("=" * 60)
+
+    # Determine which provider to use (from env var or default to openai)
+    llm_provider = os.getenv("LLM_PROVIDER", "openai")
+
+    # Get the model from env or use defaults
+    if llm_provider == "groq":
+        model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+    else:
+        model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+    print(f"\nUsing LLM Provider: {llm_provider.upper()}")
+    print(f"Using Model: {model}\n")
 
     # Create a patient journey
     journey = PatientJourney(
@@ -90,15 +105,16 @@ def example_basic_usage():
     """
 
     # Generate FHIR resources using AI
-    # Make sure OPENAI_API_KEY is set in your environment
+    # Make sure the appropriate API key is set in your environment based on provider
     # Note: auto_save is enabled by default, so resources will be saved to output/firstname_lastname/
     result = generate_fhir_from_journey(
         journey=journey,
         patient_context=patient_context,
-        model="gpt-4o-mini",
+        model=model,
         fhir_version="R4",
         max_iterations=3,
         auto_save=True,  # Automatically saves to output/firstname_lastname/ folder
+        llm_provider=llm_provider,  # Use the provider from env var
     )
 
     # Check results
@@ -141,15 +157,24 @@ def example_basic_usage():
 
 def main():
     """Run all examples."""
-    # Check for API key
-    if not os.getenv("OPENAI_API_KEY"):
-        print("ERROR: Please set OPENAI_API_KEY environment variable")
-        print("Example: export OPENAI_API_KEY='your-api-key-here'")
-        return
+    # Check for API key based on provider
+    llm_provider = os.getenv("LLM_PROVIDER", "openai")
+
+    if llm_provider == "groq":
+        if not os.getenv("GROQ_API_KEY"):
+            print("ERROR: Please set GROQ_API_KEY environment variable")
+            print("Example: export GROQ_API_KEY='your-api-key-here'")
+            return
+    else:
+        if not os.getenv("OPENAI_API_KEY"):
+            print("ERROR: Please set OPENAI_API_KEY environment variable")
+            print("Example: export OPENAI_API_KEY='your-api-key-here'")
+            return
 
     print("Patient Journey to FHIR Generation")
     print("=" * 60)
-    print("\nThese examples will use the OpenAI API to generate FHIR resources.")
+    print(f"\nUsing LLM Provider: {llm_provider.upper()}")
+    print("These examples will use the LLM API to generate FHIR resources.")
     print("This may take a minute or two...")
 
     # Run examples
